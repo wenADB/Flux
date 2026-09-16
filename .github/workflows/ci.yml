@@ -2,13 +2,23 @@ name: CI Build & Test
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
+
   pull_request:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
+
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -16,25 +26,104 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # =========================================================
+      # CHECKOUT
+      # =========================================================
+
       - name: Checkout repository
         uses: actions/checkout@v5
+
+
+      # =========================================================
+      # NODE.JS
+      # =========================================================
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 22
-          cache: 'npm'
+          node-version: "24"
+          cache: npm
+
+
+      # =========================================================
+      # ENVIRONMENT
+      # =========================================================
+
+      - name: Show environment
+        run: |
+          echo "========================================"
+          echo "NODE"
+          echo "========================================"
+
+          node --version
+          npm --version
+
+          echo
+          echo "========================================"
+          echo "REPOSITORY"
+          echo "========================================"
+
+          pwd
+          ls -la
+
+
+      # =========================================================
+      # DEPENDENCIES
+      # =========================================================
 
       - name: Install dependencies
         run: npm ci
 
+
+      # =========================================================
+      # TYPECHECK
+      # =========================================================
+
       - name: Run TypeScript typecheck
         run: npm run typecheck
+
+
+      # =========================================================
+      # PRODUCTION BUILD
+      # =========================================================
 
       - name: Build production bundle
         run: npm run build
 
+
+      # =========================================================
+      # VERIFY DIST
+      # =========================================================
+
+      - name: Verify production output
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -d "dist" ]; then
+            echo "::error::dist directory was not generated."
+            exit 1
+          fi
+
+          echo "Production build successfully generated."
+
+          echo
+          echo "Build output:"
+          find dist -maxdepth 3 -type f -print
+
+
+      # =========================================================
+      # ARTIFACT
+      # =========================================================
+
       - name: Upload production artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flux-build-artifact
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7      - name: Upload production artifact
         uses: actions/upload-artifact@v4
         with:
           name: flux-build-artifact
