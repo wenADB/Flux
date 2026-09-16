@@ -36,17 +36,17 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # CHECKOUT
-      # ============================================================
+      # ==========================================================
+      # 1. CHECKOUT
+      # ==========================================================
 
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
 
-      # ============================================================
-      # JAVA
-      # ============================================================
+      # ==========================================================
+      # 2. JAVA 17
+      # ==========================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -55,17 +55,17 @@ jobs:
           java-version: "17"
 
 
-      # ============================================================
-      # JAVA VERIFICATION
-      # ============================================================
+      # ==========================================================
+      # 3. VERIFY JAVA
+      # ==========================================================
 
-      - name: Verify Java environment
+      - name: Verify Java
         shell: bash
         run: |
           set -e
 
           echo "=============================================="
-          echo "FLUX JAVA ENVIRONMENT"
+          echo "JAVA ENVIRONMENT"
           echo "=============================================="
 
           echo
@@ -73,7 +73,7 @@ jobs:
           echo "$JAVA_HOME"
 
           echo
-          echo "Java version:"
+          echo "Java:"
           java -version
 
           echo
@@ -81,13 +81,13 @@ jobs:
           command -v java
 
           echo
-          echo "Java path:"
+          echo "Resolved Java:"
           readlink -f "$(command -v java)" || true
 
 
-      # ============================================================
-      # ANDROID SDK
-      # ============================================================
+      # ==========================================================
+      # 4. VERIFY ANDROID SDK
+      # ==========================================================
 
       - name: Verify Android SDK
         shell: bash
@@ -100,22 +100,23 @@ jobs:
 
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
 
+          if [ ! -d "$SDK" ]; then
+            echo "::error::Android SDK was not found at:"
+            echo "$SDK"
+            exit 1
+          fi
+
           echo
           echo "ANDROID_HOME:"
-          echo "${ANDROID_HOME:-not-set}"
+          echo "$ANDROID_HOME"
 
           echo
           echo "ANDROID_SDK_ROOT:"
-          echo "${ANDROID_SDK_ROOT:-not-set}"
+          echo "$ANDROID_SDK_ROOT"
 
           echo
-          echo "Resolved SDK:"
+          echo "SDK:"
           echo "$SDK"
-
-          if [ ! -d "$SDK" ]; then
-            echo "::error::Android SDK directory was not found."
-            exit 1
-          fi
 
           echo
           echo "Android platforms:"
@@ -127,7 +128,7 @@ jobs:
             2>/dev/null || true
 
           echo
-          echo "Android Build Tools:"
+          echo "Build Tools:"
           find "$SDK/build-tools" \
             -maxdepth 1 \
             -mindepth 1 \
@@ -137,18 +138,14 @@ jobs:
 
           echo
           echo "ADB:"
-          if command -v adb >/dev/null 2>&1; then
-            adb version
-          else
-            echo "adb not found"
-          fi
+          adb version || true
 
 
-      # ============================================================
-      # ANDROID PATH
-      # ============================================================
+      # ==========================================================
+      # 5. CONFIGURE ANDROID SDK
+      # ==========================================================
 
-      - name: Configure Android SDK environment
+      - name: Configure Android SDK
         shell: bash
         run: |
           set -e
@@ -167,120 +164,165 @@ jobs:
           fi
 
 
-      # ============================================================
-      # PROJECT INSPECTION
-      # ============================================================
+      # ==========================================================
+      # 6. DISCOVER ANDROID PROJECT
+      # ==========================================================
 
-      - name: Inspect repository
+      - name: Discover Android project
         shell: bash
         run: |
           set -e
 
           echo "=============================================="
-          echo "FLUX REPOSITORY"
+          echo "DISCOVERING ANDROID PROJECT"
           echo "=============================================="
 
           echo
-          echo "Current directory:"
+          echo "Repository root:"
           pwd
 
           echo
-          echo "Root:"
+          echo "Top-level files:"
           ls -la
 
           echo
-          echo "Gradle files:"
-          find . \
-            -maxdepth 4 \
-            \( \
-              -name "gradlew" \
-              -o -name "gradlew.bat" \
-              -o -name "gradle-wrapper.jar" \
-              -o -name "gradle-wrapper.properties" \
-              -o -name "settings.gradle" \
-              -o -name "settings.gradle.kts" \
-              -o -name "build.gradle" \
-              -o -name "build.gradle.kts" \
-            \) \
-            -print
+          echo "Searching for settings.gradle..."
+
+          SETTINGS_FILE=""
+
+          if [ -f "./settings.gradle.kts" ]; then
+            SETTINGS_FILE="./settings.gradle.kts"
+          elif [ -f "./settings.gradle" ]; then
+            SETTINGS_FILE="./settings.gradle"
+          else
+            SETTINGS_FILE="$(
+              find . \
+                -type f \
+                \( \
+                  -name "settings.gradle.kts" \
+                  -o \
+                  -name "settings.gradle" \
+                \) \
+                -not -path "./.git/*" \
+                | head -n 1
+            )"
+          fi
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::No settings.gradle.kts or settings.gradle was found."
+            echo
+            echo "This repository does not currently contain a detectable Gradle Android project."
+            echo
+            echo "Files found:"
+            find . -maxdepth 3 -type f -not -path "./.git/*" | sort | head -n 300
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+
+          echo
+          echo "Settings file:"
+          echo "$SETTINGS_FILE"
+
+          echo
+          echo "Gradle project directory:"
+          echo "$PROJECT_DIR"
+
+          echo
+          echo "Searching for Android app module..."
+
+          APP_DIR=""
+
+          if [ -d "$PROJECT_DIR/app" ]; then
+            APP_DIR="$PROJECT_DIR/app"
+          else
+            APP_DIR="$(
+              find "$PROJECT_DIR" \
+                -type f \
+                \( \
+                  -path "*/app/build.gradle.kts" \
+                  -o \
+                  -path "*/app/build.gradle" \
+                \) \
+                -not -path "*/.gradle/*" \
+                | head -n 1 \
+                | xargs -r dirname
+            )"
+          fi
+
+          if [ -z "$APP_DIR" ]; then
+            echo "::error::No Android app module was detected."
+            echo
+            echo "Expected one of:"
+            echo "  app/build.gradle.kts"
+            echo "  app/build.gradle"
+            exit 1
+          fi
+
+          APP_DIR="$(cd "$APP_DIR" && pwd)"
+
+          echo
+          echo "Android app directory:"
+          echo "$APP_DIR"
+
+          echo
+          echo "Saving project paths..."
+
+          echo "FLUX_PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "FLUX_APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+
+          echo
+          echo "Project discovery: SUCCESS"
 
 
-      # ============================================================
-      # VALIDATE BASIC ANDROID PROJECT
-      # ============================================================
+      # ==========================================================
+      # 7. INSPECT PROJECT
+      # ==========================================================
 
-      - name: Validate Android project
+      - name: Inspect Gradle project
         shell: bash
         run: |
           set -e
 
           echo "=============================================="
-          echo "ANDROID PROJECT VALIDATION"
+          echo "GRADLE PROJECT"
           echo "=============================================="
 
-          if [ ! -d "./app" ]; then
-            echo "::error::app/ directory was not found."
-            exit 1
-          fi
-
-          if [ ! -f "./settings.gradle.kts" ] && \
-             [ ! -f "./settings.gradle" ]; then
-            echo "::error::settings.gradle.kts or settings.gradle was not found."
-            exit 1
-          fi
-
-          if [ ! -f "./build.gradle.kts" ] && \
-             [ ! -f "./build.gradle" ]; then
-            echo "::error::Root build.gradle.kts or build.gradle was not found."
-            exit 1
-          fi
+          cd "$FLUX_PROJECT_DIR"
 
           echo
-          echo "app/: OK"
+          echo "Project directory:"
+          pwd
+
+          echo
+          echo "Project files:"
+          find . \
+            -maxdepth 4 \
+            -type f \
+            -not -path "./.git/*" \
+            -not -path "./.gradle/*" \
+            | sort \
+            | head -n 500
 
           echo
           echo "Settings:"
-          if [ -f "./settings.gradle.kts" ]; then
+          if [ -f "settings.gradle.kts" ]; then
             echo "settings.gradle.kts"
-          else
+          elif [ -f "settings.gradle" ]; then
             echo "settings.gradle"
           fi
 
           echo
-          echo "Root Gradle build:"
-          if [ -f "./build.gradle.kts" ]; then
-            echo "build.gradle.kts"
-          else
-            echo "build.gradle"
-          fi
-
-          echo
-          echo "Android project structure: OK"
+          echo "App module:"
+          ls -la "$FLUX_APP_DIR"
 
 
-      # ============================================================
-      # SETUP GRADLE
-      # ============================================================
+      # ==========================================================
+      # 8. FIND GRADLE WRAPPER
+      # ==========================================================
 
-      # IMPORTANT:
-      # A missing gradle-wrapper.jar means ./gradlew cannot start.
-      #
-      # We therefore install a known Gradle distribution first.
-      # The wrapper is regenerated below if the JAR is missing.
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: "8.13"
-          cache-provider: basic
-          validate-wrappers: false
-
-
-      # ============================================================
-      # REPAIR / GENERATE GRADLE WRAPPER
-      # ============================================================
-
-      - name: Repair Gradle wrapper
+      - name: Locate Gradle wrapper
         shell: bash
         run: |
           set -e
@@ -289,51 +331,178 @@ jobs:
           echo "GRADLE WRAPPER"
           echo "=============================================="
 
-          mkdir -p gradle/wrapper
+          cd "$FLUX_PROJECT_DIR"
 
-          if [ ! -f "./gradlew" ]; then
-            echo "::error::gradlew is missing."
+          WRAPPER_DIR=""
+
+          if [ -f "./gradlew" ]; then
+            WRAPPER_DIR="$PWD"
+          elif [ -f "../gradlew" ]; then
+            WRAPPER_DIR="$(cd .. && pwd)"
+          else
+            WRAPPER_DIR="$(
+              find .. \
+                -maxdepth 3 \
+                -type f \
+                -name "gradlew" \
+                -not -path "*/.git/*" \
+                | head -n 1 \
+                | xargs -r dirname
+            )"
+          fi
+
+          if [ -z "$WRAPPER_DIR" ]; then
+            echo "::error::gradlew was not found."
             exit 1
           fi
 
-          if [ ! -f "./gradle/wrapper/gradle-wrapper.properties" ]; then
+          WRAPPER_DIR="$(cd "$WRAPPER_DIR" && pwd)"
+
+          echo
+          echo "Wrapper directory:"
+          echo "$WRAPPER_DIR"
+
+          echo
+          echo "Wrapper script:"
+          ls -lh "$WRAPPER_DIR/gradlew"
+
+          echo
+          echo "Wrapper directory contents:"
+          find "$WRAPPER_DIR/gradle/wrapper" \
+            -maxdepth 1 \
+            -type f \
+            -print \
+            2>/dev/null || true
+
+          echo
+          echo "Saving wrapper path..."
+
+          echo "FLUX_WRAPPER_DIR=$WRAPPER_DIR" >> "$GITHUB_ENV"
+
+          echo
+          echo "Wrapper location: SUCCESS"
+
+
+      # ==========================================================
+      # 9. READ GRADLE VERSION
+      # ==========================================================
+
+      - name: Detect Gradle version
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "GRADLE VERSION"
+          echo "=============================================="
+
+          cd "$FLUX_WRAPPER_DIR"
+
+          PROPERTIES="gradle/wrapper/gradle-wrapper.properties"
+
+          if [ ! -f "$PROPERTIES" ]; then
             echo "::error::gradle-wrapper.properties is missing."
             exit 1
           fi
 
           echo
-          echo "Wrapper properties:"
-          cat ./gradle/wrapper/gradle-wrapper.properties
+          echo "gradle-wrapper.properties:"
+          cat "$PROPERTIES"
+
+          DISTRIBUTION_URL="$(
+            grep '^distributionUrl=' "$PROPERTIES" \
+            | sed 's/^distributionUrl=//' \
+            | sed 's/\\//g'
+          )"
+
+          if [ -z "$DISTRIBUTION_URL" ]; then
+            echo "::error::distributionUrl was not found."
+            exit 1
+          fi
+
+          GRADLE_VERSION="$(
+            echo "$DISTRIBUTION_URL" \
+            | sed -nE 's/.*gradle-([0-9]+\.[0-9]+(\.[0-9]+)?)-.*/\1/p'
+          )"
+
+          if [ -z "$GRADLE_VERSION" ]; then
+            echo "::error::Could not determine Gradle version."
+            echo "distributionUrl=$DISTRIBUTION_URL"
+            exit 1
+          fi
 
           echo
+          echo "Detected Gradle version:"
+          echo "$GRADLE_VERSION"
 
-          if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+          echo "FLUX_GRADLE_VERSION=$GRADLE_VERSION" >> "$GITHUB_ENV"
 
-            echo "gradle-wrapper.jar is missing."
-            echo "Generating wrapper using installed Gradle..."
+          echo
+          echo "Gradle version detection: SUCCESS"
 
-            gradle wrapper
 
-          else
+      # ==========================================================
+      # 10. SETUP GRADLE
+      # ==========================================================
 
-            echo "gradle-wrapper.jar already exists."
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: ${{ env.FLUX_GRADLE_VERSION }}
+          cache-provider: basic
+          validate-wrappers: false
 
-          fi
+
+      # ==========================================================
+      # 11. REPAIR MISSING WRAPPER JAR
+      # ==========================================================
+
+      - name: Repair Gradle wrapper
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "REPAIRING GRADLE WRAPPER"
+          echo "=============================================="
+
+          cd "$FLUX_WRAPPER_DIR"
 
           chmod +x ./gradlew
 
+          if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+
+            echo
+            echo "gradle-wrapper.jar already exists."
+
+          else
+
+            echo
+            echo "gradle-wrapper.jar is missing."
+            echo "Generating wrapper using Gradle $FLUX_GRADLE_VERSION..."
+
+            gradle wrapper \
+              --gradle-version "$FLUX_GRADLE_VERSION" \
+              --distribution-type bin
+
+          fi
+
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "::error::Gradle wrapper JAR could not be generated."
+            exit 1
+          fi
+
           echo
           echo "Wrapper files:"
-          ls -lh ./gradlew
-          ls -lh ./gradle/wrapper/
+          ls -lh gradle/wrapper/
 
           echo
-          echo "Wrapper repair complete."
+          echo "Gradle wrapper repair: SUCCESS"
 
 
-      # ============================================================
-      # TEST GRADLE
-      # ============================================================
+      # ==========================================================
+      # 12. TEST GRADLE
+      # ==========================================================
 
       - name: Test Gradle wrapper
         shell: bash
@@ -341,18 +510,44 @@ jobs:
           set -e
 
           echo "=============================================="
-          echo "TESTING GRADLE WRAPPER"
+          echo "TESTING GRADLE"
           echo "=============================================="
 
+          cd "$FLUX_WRAPPER_DIR"
+
           ./gradlew \
+            --version \
+            --no-daemon
+
+          echo
+          echo "Gradle wrapper test: SUCCESS"
+
+
+      # ==========================================================
+      # 13. VERIFY ANDROID TASKS
+      # ==========================================================
+
+      - name: Verify Android Gradle tasks
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "ANDROID GRADLE TASKS"
+          echo "=============================================="
+
+          cd "$FLUX_WRAPPER_DIR"
+
+          ./gradlew \
+            :app:tasks \
             --no-daemon \
             --stacktrace \
-            help
+            --console=plain
 
 
-      # ============================================================
-      # CLEAN
-      # ============================================================
+      # ==========================================================
+      # 14. CLEAN
+      # ==========================================================
 
       - name: Clean project
         shell: bash
@@ -360,18 +555,21 @@ jobs:
           set -e
 
           echo "=============================================="
-          echo "CLEANING FLUX"
+          echo "CLEANING PROJECT"
           echo "=============================================="
+
+          cd "$FLUX_WRAPPER_DIR"
 
           ./gradlew \
             clean \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --console=plain
 
 
-      # ============================================================
-      # BUILD DEBUG
-      # ============================================================
+      # ==========================================================
+      # 15. BUILD DEBUG
+      # ==========================================================
 
       - name: Build debug APK
         shell: bash
@@ -382,15 +580,18 @@ jobs:
           echo "BUILDING DEBUG APK"
           echo "=============================================="
 
+          cd "$FLUX_WRAPPER_DIR"
+
           ./gradlew \
             :app:assembleDebug \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --console=plain
 
 
-      # ============================================================
-      # BUILD RELEASE
-      # ============================================================
+      # ==========================================================
+      # 16. BUILD RELEASE
+      # ==========================================================
 
       - name: Build release APK
         shell: bash
@@ -401,15 +602,18 @@ jobs:
           echo "BUILDING RELEASE APK"
           echo "=============================================="
 
+          cd "$FLUX_WRAPPER_DIR"
+
           ./gradlew \
             :app:assembleRelease \
             --no-daemon \
-            --stacktrace
+            --stacktrace \
+            --console=plain
 
 
-      # ============================================================
-      # FIND APKs
-      # ============================================================
+      # ==========================================================
+      # 17. LOCATE APKs
+      # ==========================================================
 
       - name: Verify APK output
         shell: bash
@@ -420,22 +624,25 @@ jobs:
           echo "VERIFYING APK OUTPUT"
           echo "=============================================="
 
+          cd "$FLUX_WRAPPER_DIR"
+
           echo
-          echo "Generated APK files:"
-          find app/build/outputs/apk \
+          echo "APK files:"
+          find . \
             -type f \
             -name "*.apk" \
+            -path "*/build/outputs/apk/*" \
             -print
 
           DEBUG_APK="$(
-            find app/build/outputs/apk/debug \
+            find "$FLUX_APP_DIR/build/outputs/apk/debug" \
               -type f \
               -name "*.apk" \
               | head -n 1
           )"
 
           RELEASE_APK="$(
-            find app/build/outputs/apk/release \
+            find "$FLUX_APP_DIR/build/outputs/apk/release" \
               -type f \
               -name "*.apk" \
               | head -n 1
@@ -459,22 +666,22 @@ jobs:
             exit 1
           fi
 
-          mkdir -p release-apks
+          mkdir -p "$GITHUB_WORKSPACE/release-apks"
 
           cp "$DEBUG_APK" \
-            release-apks/FLUX-debug.apk
+            "$GITHUB_WORKSPACE/release-apks/FLUX-debug.apk"
 
           cp "$RELEASE_APK" \
-            release-apks/FLUX-release.apk
+            "$GITHUB_WORKSPACE/release-apks/FLUX-release.apk"
 
           echo
           echo "Final APKs:"
-          ls -lh release-apks/
+          ls -lh "$GITHUB_WORKSPACE/release-apks/"
 
 
-      # ============================================================
-      # UPLOAD APK ARTIFACT
-      # ============================================================
+      # ==========================================================
+      # 18. UPLOAD APKs
+      # ==========================================================
 
       - name: Upload FLUX APKs
         uses: actions/upload-artifact@v4
@@ -485,9 +692,9 @@ jobs:
           retention-days: 30
 
 
-      # ============================================================
-      # GITHUB RELEASE
-      # ============================================================
+      # ==========================================================
+      # 19. CREATE RELEASE
+      # ==========================================================
 
       - name: Create GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release) }}
