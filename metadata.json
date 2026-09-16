@@ -1,0 +1,6 @@
+{
+  "name": "FLUX",
+  "description": "Android Performance & Optimization Engine with real device telemetry, Shizuku privileged execution, thermal monitoring, game profiles, and non-root system tuning.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
