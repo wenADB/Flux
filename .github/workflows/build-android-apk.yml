@@ -35,8 +35,10 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      # Keep the launcher JVM reasonably constrained.
       JAVA_TOOL_OPTIONS: "-Xmx1g -XX:MaxMetaspaceSize=512m"
 
+      # Gradle build JVM.
       GRADLE_OPTS: >-
         -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
         -Dorg.gradle.daemon=false
@@ -44,22 +46,25 @@ jobs:
         -Dorg.gradle.workers.max=2
         -Dorg.gradle.caching=true
 
+      # Kotlin compiler daemon.
       KOTLIN_DAEMON_JVM_OPTIONS: "-Xmx2g -XX:MaxMetaspaceSize=512m"
+
+      # Stable GC configuration.
       _JAVA_OPTIONS: "-XX:+UseG1GC"
 
     steps:
 
-      # ==========================================================
-      # 1. CHECKOUT
-      # ==========================================================
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
 
       - name: Checkout repository
         uses: actions/checkout@v6
 
 
-      # ==========================================================
-      # 2. JAVA 17
-      # ==========================================================
+      # ============================================================
+      # JAVA
+      # ============================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -67,10 +72,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-
-      # ==========================================================
-      # 3. VERIFY JAVA
-      # ==========================================================
 
       - name: Verify Java environment
         shell: bash
@@ -106,9 +107,9 @@ jobs:
           echo "$GRADLE_OPTS"
 
 
-      # ==========================================================
-      # 4. VERIFY ANDROID SDK
-      # ==========================================================
+      # ============================================================
+      # ANDROID SDK
+      # ============================================================
 
       - name: Verify Android SDK
         shell: bash
@@ -169,10 +170,6 @@ jobs:
           fi
 
 
-      # ==========================================================
-      # 5. CONFIGURE ANDROID SDK
-      # ==========================================================
-
       - name: Configure Android SDK
         shell: bash
         run: |
@@ -192,9 +189,9 @@ jobs:
           fi
 
 
-      # ==========================================================
-      # 6. DISCOVER PROJECT
-      # ==========================================================
+      # ============================================================
+      # DISCOVER PROJECT
+      # ============================================================
 
       - name: Discover Android project
         shell: bash
@@ -217,8 +214,10 @@ jobs:
 
           if [ -f "./settings.gradle.kts" ]; then
             SETTINGS_FILE="./settings.gradle.kts"
+
           elif [ -f "./settings.gradle" ]; then
             SETTINGS_FILE="./settings.gradle"
+
           else
             SETTINGS_FILE="$(
               find . \
@@ -249,6 +248,7 @@ jobs:
 
           if [ -d "$PROJECT_DIR/app" ]; then
             APP_DIR="$PROJECT_DIR/app"
+
           else
             APP_DIR="$(
               find "$PROJECT_DIR" \
@@ -279,9 +279,9 @@ jobs:
           echo "FLUX_APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
 
 
-      # ==========================================================
-      # 7. FIND WRAPPER
-      # ==========================================================
+      # ============================================================
+      # GRADLE WRAPPER
+      # ============================================================
 
       - name: Locate Gradle wrapper
         shell: bash
@@ -294,6 +294,7 @@ jobs:
 
           if [ -f "./gradlew" ]; then
             WRAPPER_DIR="$PWD"
+
           else
             WRAPPER_DIR="$(
               find .. \
@@ -323,10 +324,6 @@ jobs:
 
           echo "FLUX_WRAPPER_DIR=$WRAPPER_DIR" >> "$GITHUB_ENV"
 
-
-      # ==========================================================
-      # 8. DETECT GRADLE VERSION
-      # ==========================================================
 
       - name: Detect Gradle version
         shell: bash
@@ -371,10 +368,6 @@ jobs:
           echo "FLUX_GRADLE_VERSION=$GRADLE_VERSION" >> "$GITHUB_ENV"
 
 
-      # ==========================================================
-      # 9. SETUP GRADLE
-      # ==========================================================
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
@@ -382,10 +375,6 @@ jobs:
           cache-provider: basic
           validate-wrappers: false
 
-
-      # ==========================================================
-      # 10. REPAIR WRAPPER
-      # ==========================================================
 
       - name: Repair Gradle wrapper
         shell: bash
@@ -420,9 +409,9 @@ jobs:
           ls -lh gradle/wrapper/
 
 
-      # ==========================================================
-      # 11. TEST GRADLE
-      # ==========================================================
+      # ============================================================
+      # GRADLE TEST
+      # ============================================================
 
       - name: Test Gradle
         shell: bash
@@ -441,9 +430,9 @@ jobs:
             --console=plain
 
 
-      # ==========================================================
-      # 12. SHOW MEMORY
-      # ==========================================================
+      # ============================================================
+      # MEMORY DIAGNOSTICS
+      # ============================================================
 
       - name: Show build memory
         shell: bash
@@ -467,9 +456,9 @@ jobs:
           echo "$GRADLE_OPTS"
 
 
-      # ==========================================================
-      # 13. VERIFY TASKS
-      # ==========================================================
+      # ============================================================
+      # GRADLE PROJECT VALIDATION
+      # ============================================================
 
       - name: Verify Android tasks
         shell: bash
@@ -481,18 +470,19 @@ jobs:
           ./gradlew \
             :app:tasks \
             --no-daemon \
+            --no-configuration-cache \
             --stacktrace \
             --console=plain
 
 
-      # ==========================================================
-      # 14. CLEAN ANDROID APP
-      # ==========================================================
+      # ============================================================
+      # CLEAN
+      # ============================================================
 
       - name: Clean Android app
         shell: bash
         run: |
-          set -e
+          set +e
 
           cd "$FLUX_WRAPPER_DIR"
 
@@ -503,13 +493,64 @@ jobs:
           ./gradlew \
             :app:clean \
             --no-daemon \
+            --no-configuration-cache \
             --stacktrace \
+            --info \
             --console=plain
 
+          EXIT_CODE=$?
 
-      # ==========================================================
-      # 15. BUILD DEBUG
-      # ==========================================================
+          echo
+          echo "=============================================="
+          echo "GRADLE CLEAN EXIT CODE: $EXIT_CODE"
+          echo "=============================================="
+
+          echo
+          echo "=============================================="
+          echo "GRADLE PROBLEMS REPORTS"
+          echo "=============================================="
+
+          find "$FLUX_WRAPPER_DIR" \
+            -type f \
+            \( \
+              -name "problems-report.html" \
+              -o \
+              -name "*.log" \
+            \) \
+            -print 2>/dev/null || true
+
+          echo
+          echo "=============================================="
+          echo "PROJECT GRADLE FILES"
+          echo "=============================================="
+
+          find "$FLUX_WRAPPER_DIR" \
+            -maxdepth 3 \
+            -type f \
+            \( \
+              -name "build.gradle.kts" \
+              -o \
+              -name "build.gradle" \
+              -o \
+              -name "settings.gradle.kts" \
+              -o \
+              -name "settings.gradle" \
+              -o \
+              -name "gradle.properties" \
+            \) \
+            -print
+
+          echo
+          echo "=============================================="
+          echo "END CLEAN DIAGNOSTICS"
+          echo "=============================================="
+
+          exit "$EXIT_CODE"
+
+
+      # ============================================================
+      # DEBUG APK
+      # ============================================================
 
       - name: Build debug APK
         shell: bash
@@ -525,15 +566,17 @@ jobs:
           ./gradlew \
             :app:assembleDebug \
             --no-daemon \
+            --no-configuration-cache \
             --stacktrace \
+            --info \
             --console=plain \
             --max-workers=2 \
             -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
 
 
-      # ==========================================================
-      # 16. BUILD RELEASE
-      # ==========================================================
+      # ============================================================
+      # RELEASE APK
+      # ============================================================
 
       - name: Build release APK
         shell: bash
@@ -549,15 +592,17 @@ jobs:
           ./gradlew \
             :app:assembleRelease \
             --no-daemon \
+            --no-configuration-cache \
             --stacktrace \
+            --info \
             --console=plain \
             --max-workers=2 \
             -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
 
 
-      # ==========================================================
-      # 17. VERIFY APKs
-      # ==========================================================
+      # ============================================================
+      # APK VERIFICATION
+      # ============================================================
 
       - name: Verify APK output
         shell: bash
@@ -575,6 +620,8 @@ jobs:
             exit 1
           fi
 
+          echo
+          echo "All APK files:"
           find "$FLUX_APP_DIR/build/outputs/apk" \
             -type f \
             -name "*.apk" \
@@ -617,9 +664,9 @@ jobs:
           ls -lh "$GITHUB_WORKSPACE/release-apks/"
 
 
-      # ==========================================================
-      # 18. UPLOAD ARTIFACT
-      # ==========================================================
+      # ============================================================
+      # ARTIFACT
+      # ============================================================
 
       - name: Upload FLUX APKs
         uses: actions/upload-artifact@v4
@@ -630,9 +677,9 @@ jobs:
           retention-days: 30
 
 
-      # ==========================================================
-      # 19. GITHUB RELEASE
-      # ==========================================================
+      # ============================================================
+      # GITHUB RELEASE
+      # ============================================================
 
       - name: Create GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release) }}
