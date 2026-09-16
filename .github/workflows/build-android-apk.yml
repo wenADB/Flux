@@ -2,39 +2,309 @@ name: Build & Release Android APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
     tags:
-      - 'v*'
+      - "v*"
+
   workflow_dispatch:
     inputs:
       create_release:
-        description: 'Publish a GitHub Release with the APK attached'
+        description: "Publish a GitHub Release with the APK attached"
         required: false
         type: boolean
         default: true
+
       release_tag:
-        description: 'Release Tag (e.g. v1.0.0)'
+        description: "Release Tag (example: v1.0.0)"
         required: false
-        default: 'v1.0.0'
+        type: string
+        default: "v1.0.0"
 
 permissions:
   contents: write
 
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-apk:
-    name: Build Android APK
+
+  build:
+    name: Build FLUX APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v5
+
+      # ---------------------------------------------------------
+      # CHECKOUT
+      # ---------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+
+      # ---------------------------------------------------------
+      # JAVA
+      # ---------------------------------------------------------
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: 'gradle'
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+
+      # ---------------------------------------------------------
+      # ANDROID SDK
+      # ---------------------------------------------------------
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+
+      # ---------------------------------------------------------
+      # VERIFY PROJECT
+      # ---------------------------------------------------------
+
+      - name: Verify Gradle project
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "Repository"
+          echo "========================================"
+
+          pwd
+          ls -la
+
+          echo
+          echo "========================================"
+          echo "Gradle files"
+          echo "========================================"
+
+          find . -maxdepth 3 \
+            \( -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
+            -o -name "build.gradle" \
+            -o -name "build.gradle.kts" \
+            -o -name "gradlew" \) \
+            -print
+
+          echo
+          echo "========================================"
+          echo "Android modules"
+          echo "========================================"
+
+          find . -maxdepth 3 -type d -name "app" -print
+
+          if [ ! -f "./gradlew" ]; then
+            echo "::error::Gradle Wrapper (gradlew) is missing."
+            echo "Commit gradlew, gradlew.bat and the gradle/wrapper directory."
+            exit 1
+          fi
+
+          if [ ! -f "./settings.gradle" ] && \
+             [ ! -f "./settings.gradle.kts" ]; then
+            echo "::error::settings.gradle(.kts) is missing."
+            exit 1
+          fi
+
+          if [ ! -d "./app" ]; then
+            echo "::error::Android app module './app' is missing."
+            exit 1
+          fi
+
+          chmod +x ./gradlew
+
+
+      # ---------------------------------------------------------
+      # GRADLE
+      # ---------------------------------------------------------
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-cleanup: on-success
+
+
+      # ---------------------------------------------------------
+      # GRADLE INFORMATION
+      # ---------------------------------------------------------
+
+      - name: Show build environment
+        run: |
+          echo "Java:"
+          java -version
+
+          echo
+          echo "Gradle:"
+          ./gradlew --version
+
+          echo
+          echo "Android:"
+          adb version || true
+
+
+      # ---------------------------------------------------------
+      # CLEAN
+      # ---------------------------------------------------------
+
+      - name: Clean project
+        run: |
+          ./gradlew clean --stacktrace
+
+
+      # ---------------------------------------------------------
+      # DEBUG APK
+      # ---------------------------------------------------------
+
+      - name: Build Debug APK
+        run: |
+          ./gradlew :app:assembleDebug \
+            --stacktrace \
+            --no-daemon
+
+
+      # ---------------------------------------------------------
+      # RELEASE APK
+      # ---------------------------------------------------------
+
+      - name: Build Release APK
+        run: |
+          ./gradlew :app:assembleRelease \
+            --stacktrace \
+            --no-daemon
+
+
+      # ---------------------------------------------------------
+      # LOCATE APK
+      # ---------------------------------------------------------
+
+      - name: Locate APK files
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "Generated APK files"
+          echo "========================================"
+
+          find . \
+            -type f \
+            -path "*/build/outputs/apk/*" \
+            -name "*.apk" \
+            -print
+
+
+      # ---------------------------------------------------------
+      # PREPARE RELEASE FILES
+      # ---------------------------------------------------------
+
+      - name: Prepare APK artifacts
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p release-apks
+
+          DEBUG_APK=$(find app/build/outputs/apk \
+            -type f \
+            -name "*debug*.apk" \
+            | head -n 1)
+
+          RELEASE_APK=$(find app/build/outputs/apk \
+            -type f \
+            -name "*release*.apk" \
+            | head -n 1)
+
+          if [ -z "$DEBUG_APK" ]; then
+            echo "::error::Debug APK was not generated."
+            exit 1
+          fi
+
+          if [ -z "$RELEASE_APK" ]; then
+            echo "::error::Release APK was not generated."
+            exit 1
+          fi
+
+          cp "$DEBUG_APK" \
+            release-apks/FLUX-debug.apk
+
+          cp "$RELEASE_APK" \
+            release-apks/FLUX-release.apk
+
+          echo
+          echo "========================================"
+          echo "Release files"
+          echo "========================================"
+
+          ls -lh release-apks/
+
+
+      # ---------------------------------------------------------
+      # UPLOAD ARTIFACT
+      # ---------------------------------------------------------
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FLUX-APK
+          path: release-apks/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+
+      # ---------------------------------------------------------
+      # RELEASE
+      # ---------------------------------------------------------
+
+      - name: Create GitHub Release
+        if: >
+          startsWith(github.ref, 'refs/tags/') ||
+          (
+            github.event_name == 'workflow_dispatch' &&
+            inputs.create_release == true
+          )
+
+        uses: softprops/action-gh-release@v2
+
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag }}
+
+          name: FLUX Android App ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag }}
+
+          generate_release_notes: true
+
+          draft: false
+
+          prerelease: false
+
+          files: |
+            release-apks/FLUX-release.apk
+            release-apks/FLUX-debug.apk
+
+          body: |
+            # FLUX
+
+            Android Performance & Optimization Engine
+
+            ## Downloads
+
+            **FLUX-release.apk**
+            Production release build.
+
+            **FLUX-debug.apk**
+            Debug build for development/testing.
+
+            ## Build
+
+            Built automatically with GitHub Actions.
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}          cache: 'gradle'
 
       - name: Configure Android SDK & Install Platform Tools
         run: |
