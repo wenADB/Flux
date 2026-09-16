@@ -17,7 +17,7 @@ on:
         type: boolean
 
       release_tag:
-        description: "Release tag (example: v1.0.0)"
+        description: "Release tag"
         required: false
         default: ""
         type: string
@@ -40,20 +40,61 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "ANDROID ENVIRONMENT"
+          echo "========================================"
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          echo
+          echo "SDK directory:"
+          ls -la "$ANDROID_HOME"
+
+          echo
+          echo "Installed SDK platforms:"
+          ls -la "$ANDROID_HOME/platforms" || true
+
+          echo
+          echo "Installed build tools:"
+          ls -la "$ANDROID_HOME/build-tools" || true
+
+          echo
+          echo "ADB:"
+          adb version || true
+
+          echo
+          echo "SDKMANAGER:"
+          sdkmanager --version || true
+
+      - name: Install required Android SDK packages
+        shell: bash
+        run: |
+          set -e
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
 
       - name: Validate Android project
         shell: bash
         run: |
           set -e
 
-          echo "=== Repository ==="
-          pwd
-          ls -la
-
-          echo
-          echo "=== Android project ==="
+          echo "========================================"
+          echo "PROJECT VALIDATION"
+          echo "========================================"
 
           test -f "./gradlew" || {
             echo "::error::gradlew was not found."
@@ -61,43 +102,56 @@ jobs:
           }
 
           test -f "./settings.gradle.kts" || test -f "./settings.gradle" || {
-            echo "::error::Gradle settings file was not found."
+            echo "::error::settings.gradle.kts or settings.gradle was not found."
             exit 1
           }
 
           test -d "./app" || {
-            echo "::error::app module was not found."
+            echo "::error::Android app module was not found."
             exit 1
           }
 
           chmod +x ./gradlew
 
           echo
-          echo "Gradle wrapper:"
+          echo "Gradle version:"
           ./gradlew --version
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Clean project
-        run: ./gradlew clean --no-daemon
+        run: ./gradlew clean --no-daemon --stacktrace
 
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
       - name: Build release APK
-        run: ./gradlew :app:assembleRelease --stacktrace --no-daemon
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: Verify APK output
         shell: bash
         run: |
           set -e
 
-          echo "=== APK files ==="
-          find app/build/outputs/apk -type f -name "*.apk" -print
+          echo "========================================"
+          echo "APK OUTPUT"
+          echo "========================================"
 
-          DEBUG_APK=$(find app/build/outputs/apk/debug -type f -name "*.apk" | head -n 1)
-          RELEASE_APK=$(find app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
+          find app/build/outputs/apk \
+            -type f \
+            -name "*.apk" \
+            -print
+
+          DEBUG_APK=$(find app/build/outputs/apk/debug \
+            -type f \
+            -name "*.apk" \
+            | head -n 1)
+
+          RELEASE_APK=$(find app/build/outputs/apk/release \
+            -type f \
+            -name "*.apk" \
+            | head -n 1)
 
           if [ -z "$DEBUG_APK" ]; then
             echo "::error::Debug APK was not generated."
@@ -115,7 +169,7 @@ jobs:
           cp "$RELEASE_APK" release-apks/FLUX-release.apk
 
           echo
-          echo "=== Release files ==="
+          echo "Generated files:"
           ls -lh release-apks/
 
       - name: Upload APK artifacts
