@@ -29,7 +29,7 @@ jobs:
 
 
       # ============================================================
-      # JAVA 17
+      # JAVA
       # ============================================================
 
       - name: Set up JDK 17
@@ -41,10 +41,6 @@ jobs:
 
       # ============================================================
       # ANDROID SDK
-      #
-      # IMPORTANT:
-      # packages: '' prevents setup-android from attempting
-      # to install the obsolete "tools" SDK package.
       # ============================================================
 
       - name: Set up Android SDK
@@ -53,18 +49,10 @@ jobs:
           packages: ''
 
 
-      # ============================================================
-      # INSTALL REQUIRED ANDROID SDK COMPONENTS
-      # ============================================================
-
       - name: Install Android SDK components
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "=============================================="
-          echo "ANDROID SDK"
-          echo "=============================================="
 
           yes | sdkmanager --licenses >/dev/null || true
 
@@ -73,53 +61,15 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-          echo
-          echo "Installed Android packages:"
-          sdkmanager --list_installed
-
 
       # ============================================================
-      # VERIFY PROJECT STRUCTURE
-      # ============================================================
-
-      - name: Verify project structure
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=============================================="
-          echo "FLUX PROJECT"
-          echo "=============================================="
-
-          echo "Working directory:"
-          pwd
-
-          echo
-          echo "Root files:"
-          ls -la
-
-          echo
-          echo "Required files:"
-
-          test -f settings.gradle.kts
-          test -f build.gradle.kts
-          test -f app/build.gradle.kts
-          test -f gradle/libs.versions.toml
-
-          echo "✓ settings.gradle.kts"
-          echo "✓ build.gradle.kts"
-          echo "✓ app/build.gradle.kts"
-          echo "✓ gradle/libs.versions.toml"
-
-
-      # ============================================================
-      # GENERATE GRADLE WRAPPER
+      # GENERATE WRAPPER IN ISOLATED DIRECTORY
       #
-      # This generates:
+      # IMPORTANT:
+      # Do NOT run "gradle wrapper" inside Flux.
       #
-      # gradle/wrapper/gradle-wrapper.jar
-      #
-      # automatically on GitHub's runner.
+      # The Flux project itself is currently being repaired.
+      # Generating the wrapper must not depend on Flux configuration.
       # ============================================================
 
       - name: Generate Gradle Wrapper
@@ -128,22 +78,72 @@ jobs:
           set -euo pipefail
 
           echo "=============================================="
-          echo "GRADLE WRAPPER"
+          echo "GENERATING GRADLE WRAPPER"
           echo "=============================================="
 
-          gradle --version
+          mkdir -p "$RUNNER_TEMP/gradle-wrapper"
 
-          echo
-          echo "Generating Gradle $GRADLE_VERSION wrapper..."
+          cd "$RUNNER_TEMP/gradle-wrapper"
+
+          cat > settings.gradle.kts <<'EOF'
+          rootProject.name = "wrapper-generator"
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          tasks.register("noop")
+          EOF
 
           gradle wrapper \
             --gradle-version "$GRADLE_VERSION" \
             --distribution-type bin
 
+          echo
+          echo "Generated wrapper:"
+          find . -maxdepth 3 -type f -print
+
+          test -f gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.properties
+          test -f gradlew
+          test -f gradlew.bat
+
+          echo
+          echo "✓ Wrapper generated."
+
+
+      # ============================================================
+      # COPY WRAPPER INTO FLUX
+      # ============================================================
+
+      - name: Install Gradle Wrapper into FLUX
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p gradle/wrapper
+
+          cp \
+            "$RUNNER_TEMP/gradle-wrapper/gradle/wrapper/gradle-wrapper.jar" \
+            gradle/wrapper/gradle-wrapper.jar
+
+          cp \
+            "$RUNNER_TEMP/gradle-wrapper/gradle/wrapper/gradle-wrapper.properties" \
+            gradle/wrapper/gradle-wrapper.properties
+
+          cp \
+            "$RUNNER_TEMP/gradle-wrapper/gradlew" \
+            gradlew
+
+          cp \
+            "$RUNNER_TEMP/gradle-wrapper/gradlew.bat" \
+            gradlew.bat
+
           chmod +x gradlew
 
           echo
-          echo "Wrapper files:"
+          echo "=============================================="
+          echo "FLUX GRADLE WRAPPER"
+          echo "=============================================="
+
           ls -lh gradle/wrapper/
 
           test -f gradle/wrapper/gradle-wrapper.jar
@@ -151,14 +151,14 @@ jobs:
           test -f gradlew
 
           echo
-          echo "✓ Gradle wrapper generated successfully."
+          echo "✓ FLUX now has gradle-wrapper.jar."
 
 
       # ============================================================
-      # VERIFY GRADLE
+      # VERIFY WRAPPER
       # ============================================================
 
-      - name: Verify Gradle
+      - name: Verify Gradle Wrapper
         shell: bash
         run: |
           set -euo pipefail
@@ -167,7 +167,24 @@ jobs:
 
 
       # ============================================================
-      # SHOW PROJECT TASKS
+      # VERIFY PROJECT
+      # ============================================================
+
+      - name: Verify project structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+          test -f gradle/libs.versions.toml
+
+          echo "✓ Gradle project structure found."
+
+
+      # ============================================================
+      # LIST TASKS
       # ============================================================
 
       - name: Verify Android Gradle tasks
@@ -178,7 +195,8 @@ jobs:
           ./gradlew :app:tasks \
             --no-daemon \
             --no-configuration-cache \
-            --stacktrace
+            --stacktrace \
+            --console=plain
 
 
       # ============================================================
@@ -193,11 +211,12 @@ jobs:
           ./gradlew :app:clean \
             --no-daemon \
             --no-configuration-cache \
-            --stacktrace
+            --stacktrace \
+            --console=plain
 
 
       # ============================================================
-      # DEBUG BUILD
+      # DEBUG APK
       # ============================================================
 
       - name: Build debug APK
@@ -209,12 +228,12 @@ jobs:
             --no-daemon \
             --no-configuration-cache \
             --stacktrace \
-            --info \
+            --console=plain \
             --max-workers=2
 
 
       # ============================================================
-      # RELEASE BUILD
+      # RELEASE APK
       # ============================================================
 
       - name: Build release APK
@@ -226,7 +245,7 @@ jobs:
             --no-daemon \
             --no-configuration-cache \
             --stacktrace \
-            --info \
+            --console=plain \
             --max-workers=2
 
 
@@ -248,30 +267,14 @@ jobs:
             -name "*.apk" \
             -print
 
-          DEBUG_APK=$(find app/build/outputs/apk/debug \
+          test -n "$(find app/build/outputs/apk \
             -type f \
             -name "*.apk" \
-            -print -quit)
-
-          RELEASE_APK=$(find app/build/outputs/apk/release \
-            -type f \
-            -name "*.apk" \
-            -print -quit)
-
-          test -n "$DEBUG_APK"
-          test -n "$RELEASE_APK"
-
-          echo
-          echo "Debug APK:"
-          echo "$DEBUG_APK"
-
-          echo
-          echo "Release APK:"
-          echo "$RELEASE_APK"
+            -print -quit)"
 
 
       # ============================================================
-      # UPLOAD DEBUG APK
+      # UPLOAD DEBUG
       # ============================================================
 
       - name: Upload debug APK
@@ -283,7 +286,7 @@ jobs:
 
 
       # ============================================================
-      # UPLOAD RELEASE APK
+      # UPLOAD RELEASE
       # ============================================================
 
       - name: Upload release APK
