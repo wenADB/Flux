@@ -27,10 +27,10 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -40,64 +40,102 @@ jobs:
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
-          yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
+          yes | sdkmanager --licenses 2>/dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" 2>/dev/null || true
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/gradle-build-action@v3
         with:
-          gradle-version: '9.3.1'
+          gradle-version: '8.6'
 
-      - name: Prepare Secrets and Signing Keystores
+      - name: Prepare Environment Configuration
         run: |
-          # Copy .env.example if .env does not exist for the secrets plugin
+          # Create .env file from .env.example or create empty one
           if [ ! -f .env ]; then
-            cp .env.example .env
+            if [ -f .env.example ]; then
+              cp .env.example .env
+              echo "✓ Created .env from .env.example"
+            else
+              echo "# Auto-generated environment file" > .env
+              echo "STORE_PASSWORD=android" >> .env
+              echo "KEY_PASSWORD=android" >> .env
+              echo "✓ Created .env with default values"
+            fi
           fi
 
+      - name: Generate Signing Keystores
+        run: |
           # Create debug.keystore if missing
           if [ ! -f debug.keystore ]; then
+            echo "Generating debug keystore..."
             keytool -genkey -v -keystore debug.keystore -storepass android \
               -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
-              -validity 10000 -dname "CN=Android Debug,O=FLUX,C=US"
+              -validity 10000 -dname "CN=Android Debug,O=FLUX,C=US" -noprompt >/dev/null 2>&1
+            echo "✓ Debug keystore created"
           fi
 
           # Create upload key for release build if missing
           if [ ! -f my-upload-key.jks ]; then
+            echo "Generating release keystore..."
             keytool -genkey -v -keystore my-upload-key.jks -storepass android \
               -alias upload -keypass android -keyalg RSA -keysize 2048 \
-              -validity 10000 -dname "CN=Android Release,O=FLUX,C=US"
+              -validity 10000 -dname "CN=Android Release,O=FLUX,C=US" -noprompt >/dev/null 2>&1
+            echo "✓ Release keystore created"
           fi
 
-      - name: Build APKs (Debug & Release)
+      - name: Build Debug APK
         env:
           STORE_PASSWORD: android
           KEY_PASSWORD: android
         run: |
-          gradle :app:assembleDebug --stacktrace
-          gradle :app:assembleRelease --stacktrace || true
+          ./gradlew :app:assembleDebug --stacktrace
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "✓ Debug APK built successfully"
+          else
+            echo "❌ Debug APK not found"
+            exit 1
+          fi
+
+      - name: Build Release APK
+        env:
+          STORE_PASSWORD: android
+          KEY_PASSWORD: android
+        run: |
+          ./gradlew :app:assembleRelease --stacktrace || {
+            echo "⚠ Release APK build failed (non-critical, will use debug APK)"
+          }
 
       - name: Prepare APK outputs
         run: |
           mkdir -p release-apks
+          
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
             cp app/build/outputs/apk/release/app-release.apk release-apks/FLUX-release.apk
+            echo "✓ Release APK ready"
+          else
+            echo "⚠ Release APK not available"
           fi
+          
           if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
             cp app/build/outputs/apk/debug/app-debug.apk release-apks/FLUX-debug.apk
+            echo "✓ Debug APK ready"
           fi
-          ls -lh release-apks/
+          
+          echo ""
+          echo "Final APK files:"
+          ls -lh release-apks/ 2>/dev/null || echo "No APKs found"
 
-      - name: Upload APKs to Artifacts (Direct Download)
+      - name: Upload APKs to Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: FLUX-APK-Download
           path: release-apks/*.apk
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
           name: FLUX Android App (${{ github.event.inputs.release_tag || github.ref_name }})
@@ -106,6 +144,8 @@ jobs:
           body: |
             ## FLUX: Android Performance & Optimization Engine
             Download the attached APK to install directly on your Android device:
-            - **FLUX-release.apk**: Production release build.
+            - **FLUX-release.apk**: Production release build (if available).
             - **FLUX-debug.apk**: Debug build signed with standard debug credentials.
           files: release-apks/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
