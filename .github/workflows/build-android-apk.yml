@@ -41,20 +41,86 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
           yes | sdkmanager --licenses 2>/dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platforms;android-34" "build-tools;34.0.0" 2>/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" 2>/dev/null || true
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      - name: Prepare Wrapper and Scripts
+      - name: Locate and Validate Gradle Project
         run: |
-          chmod +x gradlew || true
-          gradle wrapper --gradle-version 9.3.1 --distribution-type bin
+          echo "=== Current working directory: $(pwd) ==="
+          ls -la
 
-      - name: Prepare Environment Configuration
+          # Find settings.gradle.kts or settings.gradle
+          SETTINGS_PATH=$(find . -maxdepth 3 -name "settings.gradle.kts" -o -name "settings.gradle" | head -n 1)
+          if [ -n "$SETTINGS_PATH" ]; then
+            GRADLE_DIR=$(dirname "$SETTINGS_PATH")
+            echo "Found existing Gradle settings file at: $SETTINGS_PATH (Directory: $GRADLE_DIR)"
+          else
+            # Check if app directory exists
+            APP_PATH=$(find . -maxdepth 3 -type d -name "app" | head -n 1)
+            if [ -n "$APP_PATH" ]; then
+              GRADLE_DIR=$(dirname "$APP_PATH")
+            else
+              GRADLE_DIR="."
+            fi
+            echo "No settings.gradle(.kts) found. Initializing Gradle root configuration in $GRADLE_DIR..."
+            cat << 'EOF' > "$GRADLE_DIR/settings.gradle.kts"
+pluginManagement {
+  repositories {
+    google {
+      content {
+        includeGroupByRegex("com\\.android.*")
+        includeGroupByRegex("com\\.google.*")
+        includeGroupByRegex("androidx.*")
+      }
+    }
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+
+plugins { id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0" }
+
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+  repositories {
+    google()
+    mavenCentral()
+  }
+}
+
+rootProject.name = "FLUX"
+
+include(":app")
+EOF
+            echo "✓ Created $GRADLE_DIR/settings.gradle.kts"
+          fi
+
+          if [ ! -f "$GRADLE_DIR/build.gradle.kts" ] && [ ! -f "$GRADLE_DIR/build.gradle" ]; then
+            echo "Creating root build.gradle.kts in $GRADLE_DIR..."
+            cat << 'EOF' > "$GRADLE_DIR/build.gradle.kts"
+plugins {
+  alias(libs.plugins.android.application) apply false
+  alias(libs.plugins.kotlin.compose) apply false
+  alias(libs.plugins.google.devtools.ksp) apply false
+  alias(libs.plugins.roborazzi) apply false
+  alias(libs.plugins.secrets) apply false
+  alias(libs.plugins.google.services) apply false
+}
+EOF
+            echo "✓ Created $GRADLE_DIR/build.gradle.kts"
+          fi
+
+          echo "GRADLE_DIR=$GRADLE_DIR" >> $GITHUB_ENV
+
+      - name: Prepare Secrets and Signing Keystores
         run: |
+          cd "$GRADLE_DIR"
+
+          # Copy .env.example if .env does not exist for the secrets plugin
           if [ ! -f .env ]; then
             if [ -f .env.example ]; then
               cp .env.example .env
@@ -62,13 +128,11 @@ jobs:
             else
               echo "STORE_PASSWORD=android" > .env
               echo "KEY_PASSWORD=android" >> .env
-              echo "✓ Created .env with default values"
+              echo "✓ Created default .env"
             fi
           fi
 
-      - name: Generate Signing Keystores
-        run: |
-          # Create debug.keystore if missing (valid RSA keystore without invalid flags)
+          # Create debug.keystore if missing
           if [ ! -f debug.keystore ]; then
             echo "Generating debug keystore..."
             keytool -genkeypair -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
@@ -91,37 +155,37 @@ jobs:
           STORE_PASSWORD: android
           KEY_PASSWORD: android
         run: |
-          gradle :app:assembleDebug --stacktrace || ./gradlew :app:assembleDebug --stacktrace
-          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            echo "✓ Debug APK built successfully"
-          else
-            echo "❌ Debug APK not found"
-            exit 1
-          fi
+          cd "$GRADLE_DIR"
+          gradle :app:assembleDebug --stacktrace
 
       - name: Build Release APK
         env:
           STORE_PASSWORD: android
           KEY_PASSWORD: android
         run: |
-          gradle :app:assembleRelease --stacktrace || ./gradlew :app:assembleRelease --stacktrace || {
-            echo "⚠ Release APK build warning (will continue with debug APK)"
+          cd "$GRADLE_DIR"
+          gradle :app:assembleRelease --stacktrace || {
+            echo "⚠ Release build warning: Will fall back to debug APK"
           }
 
       - name: Prepare APK outputs
         run: |
           mkdir -p release-apks
-          
-          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
-            cp app/build/outputs/apk/release/app-release.apk release-apks/FLUX-release.apk
-            echo "✓ Release APK ready: release-apks/FLUX-release.apk"
-          fi
-          
-          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk release-apks/FLUX-debug.apk
+
+          # Search for any generated APKs in build directories
+          DEBUG_APK=$(find . -type f -path "*/build/outputs/apk/*" -name "*debug*.apk" | head -n 1)
+          RELEASE_APK=$(find . -type f -path "*/build/outputs/apk/*" -name "*release*.apk" | head -n 1)
+
+          if [ -n "$DEBUG_APK" ]; then
+            cp "$DEBUG_APK" release-apks/FLUX-debug.apk
             echo "✓ Debug APK ready: release-apks/FLUX-debug.apk"
           fi
-          
+
+          if [ -n "$RELEASE_APK" ]; then
+            cp "$RELEASE_APK" release-apks/FLUX-release.apk
+            echo "✓ Release APK ready: release-apks/FLUX-release.apk"
+          fi
+
           echo ""
           echo "Output APK files:"
           ls -lh release-apks/
