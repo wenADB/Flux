@@ -25,14 +25,28 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    name: Build Android APK
+    name: Build FLUX Android APK
     runs-on: ubuntu-latest
 
     steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v5
+
+
+      # ============================================================
+      # JAVA
+      # ============================================================
 
       - name: Setup Java 17
         uses: actions/setup-java@v5
@@ -40,76 +54,154 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Verify Android SDK
+
+      # ============================================================
+      # ANDROID ENVIRONMENT
+      # ============================================================
+
+      - name: Verify Android environment
         shell: bash
         run: |
           set -e
 
-          echo "========================================"
-          echo "ANDROID ENVIRONMENT"
-          echo "========================================"
+          echo "=============================================="
+          echo "FLUX ANDROID BUILD ENVIRONMENT"
+          echo "=============================================="
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo
+          echo "Java:"
+          java -version
+
+          echo
+          echo "ANDROID_HOME:"
+          echo "${ANDROID_HOME:-not-set}"
+
+          echo
+          echo "ANDROID_SDK_ROOT:"
+          echo "${ANDROID_SDK_ROOT:-not-set}"
+
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+
+          echo
+          echo "Using SDK:"
+          echo "$SDK"
 
           echo
           echo "SDK directory:"
-          ls -la "$ANDROID_HOME"
+          test -d "$SDK" || {
+            echo "::error::Android SDK directory was not found."
+            exit 1
+          }
+
+          ls -la "$SDK"
 
           echo
-          echo "Installed SDK platforms:"
-          ls -la "$ANDROID_HOME/platforms" || true
+          echo "Installed Android platforms:"
+          find "$SDK/platforms" \
+            -maxdepth 1 \
+            -mindepth 1 \
+            -type d \
+            -printf '%f\n' \
+            2>/dev/null || true
 
           echo
-          echo "Installed build tools:"
-          ls -la "$ANDROID_HOME/build-tools" || true
+          echo "Installed Build Tools:"
+          find "$SDK/build-tools" \
+            -maxdepth 1 \
+            -mindepth 1 \
+            -type d \
+            -printf '%f\n' \
+            2>/dev/null || true
 
           echo
           echo "ADB:"
-          adb version || true
+          if command -v adb >/dev/null 2>&1; then
+            adb version
+          else
+            echo "adb not found in PATH"
+          fi
 
-          echo
-          echo "SDKMANAGER:"
-          sdkmanager --version || true
 
-      - name: Install required Android SDK packages
+      # ============================================================
+      # ANDROID SDK PATH
+      # ============================================================
+
+      - name: Configure Android SDK environment
         shell: bash
         run: |
           set -e
 
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
 
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+
+          if [ -d "$SDK/platform-tools" ]; then
+            echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          fi
+
+          if [ -d "$SDK/cmdline-tools/latest/bin" ]; then
+            echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          fi
+
+          if [ -d "$SDK/cmdline-tools/12.0/bin" ]; then
+            echo "$SDK/cmdline-tools/12.0/bin" >> "$GITHUB_PATH"
+          fi
+
+
+      # ============================================================
+      # PROJECT VALIDATION
+      # ============================================================
 
       - name: Validate Android project
         shell: bash
         run: |
           set -e
 
-          echo "========================================"
-          echo "PROJECT VALIDATION"
-          echo "========================================"
+          echo "=============================================="
+          echo "VALIDATING FLUX PROJECT"
+          echo "=============================================="
+
+          echo
+          echo "Repository:"
+          pwd
+
+          echo
+          echo "Root files:"
+          ls -la
+
+          echo
+          echo "Checking Gradle wrapper..."
 
           test -f "./gradlew" || {
             echo "::error::gradlew was not found."
+            echo "FLUX must contain a Gradle wrapper."
             exit 1
           }
 
-          test -f "./settings.gradle.kts" || test -f "./settings.gradle" || {
-            echo "::error::settings.gradle.kts or settings.gradle was not found."
+          echo "gradlew: OK"
+
+          echo
+          echo "Checking Gradle settings..."
+
+          if [ -f "./settings.gradle.kts" ]; then
+            echo "settings.gradle.kts: OK"
+          elif [ -f "./settings.gradle" ]; then
+            echo "settings.gradle: OK"
+          else
+            echo "::error::No settings.gradle.kts or settings.gradle found."
             exit 1
-          }
+          fi
+
+          echo
+          echo "Checking app module..."
 
           test -d "./app" || {
-            echo "::error::Android app module was not found."
+            echo "::error::app/ directory was not found."
             exit 1
           }
+
+          echo "app/: OK"
 
           chmod +x ./gradlew
 
@@ -117,41 +209,113 @@ jobs:
           echo "Gradle version:"
           ./gradlew --version
 
+
+      # ============================================================
+      # GRADLE
+      # ============================================================
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+
+      # ============================================================
+      # CLEAN
+      # ============================================================
+
       - name: Clean project
-        run: ./gradlew clean --no-daemon --stacktrace
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "CLEANING FLUX"
+          echo "=============================================="
+
+          ./gradlew clean \
+            --no-daemon \
+            --stacktrace
+
+
+      # ============================================================
+      # DEBUG APK
+      # ============================================================
 
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "BUILDING DEBUG APK"
+          echo "=============================================="
+
+          ./gradlew :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+
+      # ============================================================
+      # RELEASE APK
+      # ============================================================
 
       - name: Build release APK
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "BUILDING RELEASE APK"
+          echo "=============================================="
+
+          ./gradlew :app:assembleRelease \
+            --no-daemon \
+            --stacktrace
+
+
+      # ============================================================
+      # FIND APKs
+      # ============================================================
 
       - name: Verify APK output
         shell: bash
         run: |
           set -e
 
-          echo "========================================"
-          echo "APK OUTPUT"
-          echo "========================================"
+          echo "=============================================="
+          echo "VERIFYING APK OUTPUT"
+          echo "=============================================="
+
+          echo
+          echo "All generated APK files:"
 
           find app/build/outputs/apk \
             -type f \
             -name "*.apk" \
             -print
 
-          DEBUG_APK=$(find app/build/outputs/apk/debug \
+          echo
+          echo "Locating debug APK..."
+
+          DEBUG_APK=$(find \
+            app/build/outputs/apk/debug \
             -type f \
             -name "*.apk" \
             | head -n 1)
 
-          RELEASE_APK=$(find app/build/outputs/apk/release \
+          echo "Debug APK:"
+          echo "${DEBUG_APK:-NOT FOUND}"
+
+          echo
+          echo "Locating release APK..."
+
+          RELEASE_APK=$(find \
+            app/build/outputs/apk/release \
             -type f \
             -name "*.apk" \
             | head -n 1)
+
+          echo "Release APK:"
+          echo "${RELEASE_APK:-NOT FOUND}"
 
           if [ -z "$DEBUG_APK" ]; then
             echo "::error::Debug APK was not generated."
@@ -165,20 +329,36 @@ jobs:
 
           mkdir -p release-apks
 
-          cp "$DEBUG_APK" release-apks/FLUX-debug.apk
-          cp "$RELEASE_APK" release-apks/FLUX-release.apk
+          cp "$DEBUG_APK" \
+            release-apks/FLUX-debug.apk
+
+          cp "$RELEASE_APK" \
+            release-apks/FLUX-release.apk
 
           echo
-          echo "Generated files:"
+          echo "=============================================="
+          echo "FINAL APK FILES"
+          echo "=============================================="
+
           ls -lh release-apks/
 
-      - name: Upload APK artifacts
+
+      # ============================================================
+      # ARTIFACT
+      # ============================================================
+
+      - name: Upload FLUX APKs
         uses: actions/upload-artifact@v4
         with:
           name: FLUX-Android-APKs
           path: release-apks/
           if-no-files-found: error
           retention-days: 30
+
+
+      # ============================================================
+      # GITHUB RELEASE
+      # ============================================================
 
       - name: Create GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release) }}
