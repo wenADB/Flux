@@ -4,564 +4,178 @@ on:
   push:
     branches:
       - main
-      - master
-    tags:
-      - "v*"
 
   workflow_dispatch:
-    inputs:
-      create_release:
-        description: "Create GitHub Release"
-        required: true
-        default: false
-        type: boolean
-
-      release_tag:
-        description: "Release tag"
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: write
 
-concurrency:
-  group: flux-android-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  GRADLE_VERSION: "9.3.1"
+  JAVA_VERSION: "17"
 
 jobs:
   build:
     name: Build FLUX Android APK
     runs-on: ubuntu-latest
 
-    env:
-      # Keep the launcher JVM reasonably constrained.
-      JAVA_TOOL_OPTIONS: "-Xmx1g -XX:MaxMetaspaceSize=512m"
-
-      # Gradle build JVM.
-      GRADLE_OPTS: >-
-        -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
-        -Dorg.gradle.daemon=false
-        -Dorg.gradle.parallel=false
-        -Dorg.gradle.workers.max=2
-        -Dorg.gradle.caching=true
-
-      # Kotlin compiler daemon.
-      KOTLIN_DAEMON_JVM_OPTIONS: "-Xmx2g -XX:MaxMetaspaceSize=512m"
-
-      # Stable GC configuration.
-      _JAVA_OPTIONS: "-XX:+UseG1GC"
-
     steps:
-
-      # ============================================================
+      # ------------------------------------------------------------
       # CHECKOUT
-      # ============================================================
+      # ------------------------------------------------------------
 
       - name: Checkout repository
         uses: actions/checkout@v6
 
-
-      # ============================================================
+      # ------------------------------------------------------------
       # JAVA
-      # ============================================================
+      # ------------------------------------------------------------
 
-      - name: Setup Java 17
+      - name: Set up JDK
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-
-      - name: Verify Java environment
-        shell: bash
-        run: |
-          set -e
-
-          echo "=============================================="
-          echo "FLUX JAVA ENVIRONMENT"
-          echo "=============================================="
-
-          echo
-          echo "JAVA_HOME:"
-          echo "$JAVA_HOME"
-
-          echo
-          echo "Java version:"
-          java -version
-
-          echo
-          echo "Java executable:"
-          command -v java
-
-          echo
-          echo "Resolved Java:"
-          readlink -f "$(command -v java)" || true
-
-          echo
-          echo "JAVA_TOOL_OPTIONS:"
-          echo "$JAVA_TOOL_OPTIONS"
-
-          echo
-          echo "GRADLE_OPTS:"
-          echo "$GRADLE_OPTS"
-
-
-      # ============================================================
+      # ------------------------------------------------------------
       # ANDROID SDK
-      # ============================================================
+      # ------------------------------------------------------------
 
-      - name: Verify Android SDK
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      # ------------------------------------------------------------
+      # VERIFY PROJECT
+      # ------------------------------------------------------------
+
+      - name: Verify Gradle project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           echo "=============================================="
-          echo "ANDROID SDK"
+          echo "FLUX PROJECT"
           echo "=============================================="
 
-          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-
-          if [ ! -d "$SDK" ]; then
-            echo "::error::Android SDK was not found."
-            echo "Expected SDK:"
-            echo "$SDK"
-            exit 1
-          fi
-
-          echo
-          echo "ANDROID_HOME:"
-          printf '%s\n' "${ANDROID_HOME:-<not set>}"
-
-          echo
-          echo "ANDROID_SDK_ROOT:"
-          printf '%s\n' "${ANDROID_SDK_ROOT:-<not set>}"
-
-          echo
-          echo "SDK:"
-          printf '%s\n' "$SDK"
-
-          echo
-          echo "SDK directory:"
-          ls -ld "$SDK"
-
-          echo
-          echo "Platforms directory:"
-          if [ -d "$SDK/platforms" ]; then
-            ls -1 "$SDK/platforms"
-          else
-            echo "No platforms directory found."
-          fi
-
-          echo
-          echo "Build Tools directory:"
-          if [ -d "$SDK/build-tools" ]; then
-            ls -1 "$SDK/build-tools"
-          else
-            echo "No build-tools directory found."
-          fi
-
-          echo
-          echo "ADB:"
-          if command -v adb >/dev/null 2>&1; then
-            adb version
-          else
-            echo "adb not found in PATH."
-          fi
-
-
-      - name: Configure Android SDK
-        shell: bash
-        run: |
-          set -e
-
-          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-
-          if [ -d "$SDK/platform-tools" ]; then
-            echo "$SDK/platform-tools" >> "$GITHUB_PATH"
-          fi
-
-          if [ -d "$SDK/cmdline-tools/latest/bin" ]; then
-            echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          fi
-
-
-      # ============================================================
-      # DISCOVER PROJECT
-      # ============================================================
-
-      - name: Discover Android project
-        shell: bash
-        run: |
-          set -e
-
-          echo "=============================================="
-          echo "DISCOVERING FLUX PROJECT"
-          echo "=============================================="
-
-          echo
-          echo "Repository:"
           pwd
 
           echo
-          echo "Root:"
+          echo "Root files:"
           ls -la
 
-          SETTINGS_FILE=""
-
-          if [ -f "./settings.gradle.kts" ]; then
-            SETTINGS_FILE="./settings.gradle.kts"
-
-          elif [ -f "./settings.gradle" ]; then
-            SETTINGS_FILE="./settings.gradle"
-
-          else
-            SETTINGS_FILE="$(
-              find . \
-                -type f \
-                \( \
-                  -name "settings.gradle.kts" \
-                  -o \
-                  -name "settings.gradle" \
-                \) \
-                -not -path "./.git/*" \
-                | head -n 1
-            )"
-          fi
-
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "::error::No settings.gradle.kts or settings.gradle found."
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+          echo
+          echo "Gradle files:"
+          find . -maxdepth 3 -type f \
+            \( -name "build.gradle" \
+            -o -name "build.gradle.kts" \
+            -o -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
+            -o -name "gradle-wrapper.properties" \) \
+            -print
 
           echo
-          echo "Gradle project:"
-          echo "$PROJECT_DIR"
+          echo "Checking required files..."
 
-          APP_DIR=""
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+          test -f gradle/libs.versions.toml
 
-          if [ -d "$PROJECT_DIR/app" ]; then
-            APP_DIR="$PROJECT_DIR/app"
+          echo "Required project files exist."
 
-          else
-            APP_DIR="$(
-              find "$PROJECT_DIR" \
-                -type f \
-                \( \
-                  -path "*/app/build.gradle.kts" \
-                  -o \
-                  -path "*/app/build.gradle" \
-                \) \
-                -not -path "*/.gradle/*" \
-                | head -n 1 \
-                | xargs -r dirname
-            )"
-          fi
-
-          if [ -z "$APP_DIR" ]; then
-            echo "::error::Android app module was not found."
-            exit 1
-          fi
-
-          APP_DIR="$(cd "$APP_DIR" && pwd)"
-
-          echo
-          echo "Android app:"
-          echo "$APP_DIR"
-
-          echo "FLUX_PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "FLUX_APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
-
-
-      # ============================================================
+      # ------------------------------------------------------------
       # GRADLE WRAPPER
-      # ============================================================
+      # ------------------------------------------------------------
+      #
+      # The repository currently does not contain
+      # gradle-wrapper.jar.
+      #
+      # GitHub Actions already has a system Gradle available.
+      # Generate the official wrapper from Gradle itself.
+      #
+      # ------------------------------------------------------------
 
-      - name: Locate Gradle wrapper
+      - name: Generate Gradle Wrapper
         shell: bash
         run: |
-          set -e
-
-          cd "$FLUX_PROJECT_DIR"
-
-          WRAPPER_DIR=""
-
-          if [ -f "./gradlew" ]; then
-            WRAPPER_DIR="$PWD"
-
-          else
-            WRAPPER_DIR="$(
-              find .. \
-                -maxdepth 4 \
-                -type f \
-                -name "gradlew" \
-                -not -path "*/.git/*" \
-                | head -n 1 \
-                | xargs -r dirname
-            )"
-          fi
-
-          if [ -z "$WRAPPER_DIR" ]; then
-            echo "::error::gradlew was not found."
-            exit 1
-          fi
-
-          WRAPPER_DIR="$(cd "$WRAPPER_DIR" && pwd)"
-
-          echo
-          echo "Gradle wrapper:"
-          echo "$WRAPPER_DIR"
-
-          echo
-          echo "gradlew:"
-          ls -lh "$WRAPPER_DIR/gradlew"
-
-          echo "FLUX_WRAPPER_DIR=$WRAPPER_DIR" >> "$GITHUB_ENV"
-
-
-      - name: Detect Gradle version
-        shell: bash
-        run: |
-          set -e
-
-          cd "$FLUX_WRAPPER_DIR"
-
-          PROPERTIES="gradle/wrapper/gradle-wrapper.properties"
-
-          if [ ! -f "$PROPERTIES" ]; then
-            echo "::error::gradle-wrapper.properties is missing."
-            exit 1
-          fi
+          set -euo pipefail
 
           echo "=============================================="
-          echo "GRADLE WRAPPER PROPERTIES"
+          echo "GENERATING GRADLE WRAPPER"
           echo "=============================================="
 
-          cat "$PROPERTIES"
+          gradle --version
 
-          DISTRIBUTION_URL="$(
-            grep '^distributionUrl=' "$PROPERTIES" \
-            | sed 's/^distributionUrl=//' \
-            | sed 's/\\//g'
-          )"
+          gradle wrapper \
+            --gradle-version "$GRADLE_VERSION" \
+            --distribution-type bin
 
-          GRADLE_VERSION="$(
-            echo "$DISTRIBUTION_URL" \
-            | sed -nE 's/.*gradle-([0-9]+\.[0-9]+(\.[0-9]+)?)-.*/\1/p'
-          )"
+          test -f gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.properties
+          test -f gradlew
 
-          if [ -z "$GRADLE_VERSION" ]; then
-            echo "::error::Unable to determine Gradle version."
-            exit 1
-          fi
+          chmod +x gradlew
 
           echo
-          echo "Detected Gradle:"
-          echo "$GRADLE_VERSION"
+          echo "Wrapper generated successfully."
 
-          echo "FLUX_GRADLE_VERSION=$GRADLE_VERSION" >> "$GITHUB_ENV"
-
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: ${{ env.FLUX_GRADLE_VERSION }}
-          cache-provider: basic
-          validate-wrappers: false
-
-
-      - name: Repair Gradle wrapper
-        shell: bash
-        run: |
-          set -e
-
-          cd "$FLUX_WRAPPER_DIR"
-
-          echo "=============================================="
-          echo "GRADLE WRAPPER"
-          echo "=============================================="
-
-          chmod +x ./gradlew
-
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo
-            echo "gradle-wrapper.jar is missing."
-            echo "Generating wrapper..."
-
-            gradle wrapper \
-              --gradle-version "$FLUX_GRADLE_VERSION" \
-              --distribution-type bin
-          fi
-
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "::error::Unable to generate gradle-wrapper.jar."
-            exit 1
-          fi
-
-          echo
-          echo "Wrapper files:"
           ls -lh gradle/wrapper/
 
+      # ------------------------------------------------------------
+      # VERIFY WRAPPER
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # GRADLE TEST
-      # ============================================================
-
-      - name: Test Gradle
+      - name: Verify Gradle Wrapper
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          cd "$FLUX_WRAPPER_DIR"
+          ./gradlew --version
 
-          echo "=============================================="
-          echo "GRADLE TEST"
-          echo "=============================================="
+      # ------------------------------------------------------------
+      # GRADLE TASKS
+      # ------------------------------------------------------------
 
-          ./gradlew \
-            --version \
-            --no-daemon \
-            --console=plain
-
-
-      # ============================================================
-      # MEMORY DIAGNOSTICS
-      # ============================================================
-
-      - name: Show build memory
+      - name: List Android tasks
         shell: bash
         run: |
-          set -e
-
-          echo "=============================================="
-          echo "BUILD MEMORY"
-          echo "=============================================="
-
-          echo
-          echo "System memory:"
-          free -h
-
-          echo
-          echo "CPU:"
-          nproc
-
-          echo
-          echo "Gradle memory configuration:"
-          echo "$GRADLE_OPTS"
-
-
-      # ============================================================
-      # GRADLE PROJECT VALIDATION
-      # ============================================================
-
-      - name: Verify Android tasks
-        shell: bash
-        run: |
-          set -e
-
-          cd "$FLUX_WRAPPER_DIR"
+          set -euo pipefail
 
           ./gradlew \
             :app:tasks \
             --no-daemon \
-            --no-configuration-cache \
-            --stacktrace \
-            --console=plain
+            --no-configuration-cache
 
-
-      # ============================================================
+      # ------------------------------------------------------------
       # CLEAN
-      # ============================================================
+      # ------------------------------------------------------------
 
-      - name: Clean Android app
+      - name: Clean Android project
         shell: bash
         run: |
-          set +e
-
-          cd "$FLUX_WRAPPER_DIR"
-
-          echo "=============================================="
-          echo "CLEANING FLUX ANDROID APP"
-          echo "=============================================="
+          set -euo pipefail
 
           ./gradlew \
             :app:clean \
             --no-daemon \
             --no-configuration-cache \
-            --stacktrace \
-            --info \
-            --console=plain
+            --stacktrace
 
-          EXIT_CODE=$?
-
-          echo
-          echo "=============================================="
-          echo "GRADLE CLEAN EXIT CODE: $EXIT_CODE"
-          echo "=============================================="
-
-          echo
-          echo "=============================================="
-          echo "GRADLE PROBLEMS REPORTS"
-          echo "=============================================="
-
-          find "$FLUX_WRAPPER_DIR" \
-            -type f \
-            \( \
-              -name "problems-report.html" \
-              -o \
-              -name "*.log" \
-            \) \
-            -print 2>/dev/null || true
-
-          echo
-          echo "=============================================="
-          echo "PROJECT GRADLE FILES"
-          echo "=============================================="
-
-          find "$FLUX_WRAPPER_DIR" \
-            -maxdepth 3 \
-            -type f \
-            \( \
-              -name "build.gradle.kts" \
-              -o \
-              -name "build.gradle" \
-              -o \
-              -name "settings.gradle.kts" \
-              -o \
-              -name "settings.gradle" \
-              -o \
-              -name "gradle.properties" \
-            \) \
-            -print
-
-          echo
-          echo "=============================================="
-          echo "END CLEAN DIAGNOSTICS"
-          echo "=============================================="
-
-          exit "$EXIT_CODE"
-
-
-      # ============================================================
+      # ------------------------------------------------------------
       # DEBUG APK
-      # ============================================================
+      # ------------------------------------------------------------
 
       - name: Build debug APK
         shell: bash
         run: |
-          set -e
-
-          cd "$FLUX_WRAPPER_DIR"
-
-          echo "=============================================="
-          echo "BUILDING DEBUG APK"
-          echo "=============================================="
+          set -euo pipefail
 
           ./gradlew \
             :app:assembleDebug \
@@ -569,25 +183,16 @@ jobs:
             --no-configuration-cache \
             --stacktrace \
             --info \
-            --console=plain \
-            --max-workers=2 \
-            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
+            --max-workers=2
 
-
-      # ============================================================
+      # ------------------------------------------------------------
       # RELEASE APK
-      # ============================================================
+      # ------------------------------------------------------------
 
       - name: Build release APK
         shell: bash
         run: |
-          set -e
-
-          cd "$FLUX_WRAPPER_DIR"
-
-          echo "=============================================="
-          echo "BUILDING RELEASE APK"
-          echo "=============================================="
+          set -euo pipefail
 
           ./gradlew \
             :app:assembleRelease \
@@ -595,100 +200,49 @@ jobs:
             --no-configuration-cache \
             --stacktrace \
             --info \
-            --console=plain \
-            --max-workers=2 \
-            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
+            --max-workers=2
 
+      # ------------------------------------------------------------
+      # VERIFY APK
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # APK VERIFICATION
-      # ============================================================
-
-      - name: Verify APK output
+      - name: Verify generated APKs
         shell: bash
         run: |
-          set -e
-
-          cd "$FLUX_WRAPPER_DIR"
+          set -euo pipefail
 
           echo "=============================================="
-          echo "APK OUTPUT"
+          echo "GENERATED APK FILES"
           echo "=============================================="
 
-          if [ ! -d "$FLUX_APP_DIR/build/outputs/apk" ]; then
-            echo "::error::APK output directory does not exist."
-            exit 1
-          fi
-
-          echo
-          echo "All APK files:"
-          find "$FLUX_APP_DIR/build/outputs/apk" \
+          find app/build/outputs/apk \
             -type f \
             -name "*.apk" \
             -print
 
-          DEBUG_APK="$(
-            find "$FLUX_APP_DIR/build/outputs/apk/debug" \
-              -type f \
-              -name "*.apk" \
-              | head -n 1
-          )"
+          test -n "$(find app/build/outputs/apk \
+            -type f \
+            -name "*.apk" \
+            -print -quit)"
 
-          RELEASE_APK="$(
-            find "$FLUX_APP_DIR/build/outputs/apk/release" \
-              -type f \
-              -name "*.apk" \
-              | head -n 1
-          )"
+      # ------------------------------------------------------------
+      # UPLOAD DEBUG APK
+      # ------------------------------------------------------------
 
-          if [ -z "$DEBUG_APK" ]; then
-            echo "::error::Debug APK was not generated."
-            exit 1
-          fi
-
-          if [ -z "$RELEASE_APK" ]; then
-            echo "::error::Release APK was not generated."
-            exit 1
-          fi
-
-          mkdir -p "$GITHUB_WORKSPACE/release-apks"
-
-          cp "$DEBUG_APK" \
-            "$GITHUB_WORKSPACE/release-apks/FLUX-debug.apk"
-
-          cp "$RELEASE_APK" \
-            "$GITHUB_WORKSPACE/release-apks/FLUX-release.apk"
-
-          echo
-          echo "Final APKs:"
-          ls -lh "$GITHUB_WORKSPACE/release-apks/"
-
-
-      # ============================================================
-      # ARTIFACT
-      # ============================================================
-
-      - name: Upload FLUX APKs
-        uses: actions/upload-artifact@v4
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v6
         with:
-          name: FLUX-Android-APKs
-          path: release-apks/
+          name: FLUX-debug
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-          retention-days: 30
 
+      # ------------------------------------------------------------
+      # UPLOAD RELEASE APK
+      # ------------------------------------------------------------
 
-      # ============================================================
-      # GITHUB RELEASE
-      # ============================================================
-
-      - name: Create GitHub Release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release) }}
-        uses: softprops/action-gh-release@v2
+      - name: Upload release APK
+        uses: actions/upload-artifact@v6
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
-          files: |
-            release-apks/FLUX-debug.apk
-            release-apks/FLUX-release.apk
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: FLUX-release
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
